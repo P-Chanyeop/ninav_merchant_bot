@@ -1,0 +1,40 @@
+# 니나브 떠상봇 필수 라이브러리
+# Discord Bot Framework
+discord.py>=2.3.2
+
+# HTTP 요청 라이브러리
+requests>=2.31.0
+
+# JSON 처리 (Python 기본 라이브러리이지만 명시)
+# json - 기본 라이브러리
+
+# 날짜/시간 처리 (Python 기본 라이브러리)
+# datetime - 기본 라이브러리
+
+# 로깅 (Python 기본 라이브러리)
+# logging - 기본 라이브러리
+
+# GUI 라이브러리 (Python 기본 라이브러리)
+# tkinter - 기본 라이브러리
+
+# 비동기 처리 (Python 기본 라이브러리)
+# asyncio - 기본 라이브러리
+
+# 스레딩 (Python 기본 라이브러리)
+# threading - 기본 라이브러리
+
+# 타입 힌팅 (Python 기본 라이브러리)
+# typing - 기본 라이브러리
+
+# 추가 권장 라이브러리 (선택사항)
+# 더 나은 HTTP 세션 관리를 위한 라이브러리
+urllib3>=2.0.0
+
+# 더 안정적인 JSON 처리를 위한 라이브러리 (선택사항)
+# orjson>=3.9.0
+
+# 환경 변수 관리 (선택사항)
+python-dotenv>=1.0.0
+
+# 더 나은 로깅을 위한 라이브러리 (선택사항)
+colorlog>=6.7.0
