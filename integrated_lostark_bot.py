@@ -388,54 +388,130 @@ class IntegratedLostArkBot:
     
     @tasks.loop(minutes=5)
     async def check_merchants(self):
-        """5분마다 상인 상태 확인 및 알림"""
+        """5분마다 상인 상태 확인 및 데이터 변경시에만 알림"""
         try:
             channel = self.bot.get_channel(self.merchant_channel_id)
             if not channel:
                 print(f"❌ 채널을 찾을 수 없습니다: {self.merchant_channel_id}")
                 return
             
-            # 데이터 자동 새로고침
+            # 이전 데이터 백업
+            previous_data = self.merchant_data.copy() if self.merchant_data else None
+            
+            # 데이터 새로고침
             await self.refresh_data_if_needed()
             
-            # 상인이 활성화되어 있고, 마지막 알림으로부터 30분이 지났으면 알림
-            now = datetime.now()
-            if self.merchant_data and len(self.merchant_data) > 0 and (
-                self.last_notification is None or 
-                (now - self.last_notification).total_seconds() > 1800  # 30분
-            ):
-                embed = discord.Embed(
-                    title="🚨 떠돌이 상인 알림",
-                    description=f"현재 **{len(self.merchant_data)}명**의 상인이 활성화되어 있습니다!",
-                    color=0xff6b35,
-                    timestamp=now
-                )
+            # 데이터 변경 감지
+            data_changed = self.has_merchant_data_changed(previous_data, self.merchant_data)
+            
+            if data_changed:
+                now = datetime.now()
                 
-                for merchant in self.merchant_data:
-                    region = merchant['region_name']
-                    npc = merchant['npc_name']
+                # 상인이 새로 등장하거나 변경된 경우
+                if self.merchant_data and len(self.merchant_data) > 0:
+                    # 처음 등장인지 변경인지 구분
+                    if not previous_data or len(previous_data) == 0:
+                        title = "🚨 떠돌이 상인 등장 알림"
+                        description = f"떠돌이 상인이 등장했습니다! 현재 **{len(self.merchant_data)}명**의 상인이 활성화되어 있습니다."
+                    else:
+                        title = "🔄 떠돌이 상인 변경 알림"
+                        description = f"상인 정보가 업데이트되었습니다! 현재 **{len(self.merchant_data)}명**의 상인이 활성화되어 있습니다."
                     
-                    # 색상이 적용된 아이템 목록 생성
-                    colored_items = self.format_items_for_discord(merchant['items'])
-                    
-                    # 아이템을 2개씩 나누어 표시
-                    item_chunks = [colored_items[i:i+2] for i in range(0, len(colored_items), 2)]
-                    item_text = '\n'.join([' • '.join(chunk) for chunk in item_chunks])
-                    
-                    embed.add_field(
-                        name=f"📍 {region} - {npc}",
-                        value=f"```\n{item_text}```",
-                        inline=False
+                    embed = discord.Embed(
+                        title=title,
+                        description=description,
+                        color=0xff6b35,
+                        timestamp=now
                     )
+                    
+                    for merchant in self.merchant_data:
+                        region = merchant['region_name']
+                        npc = merchant['npc_name']
+                        
+                        # 색상이 적용된 아이템 목록 생성
+                        colored_items = self.format_items_for_discord(merchant['items'])
+                        
+                        # 아이템을 2개씩 나누어 표시
+                        item_chunks = [colored_items[i:i+2] for i in range(0, len(colored_items), 2)]
+                        item_text = '\n'.join([' • '.join(chunk) for chunk in item_chunks])
+                        
+                        embed.add_field(
+                            name=f"📍 {region} - {npc}",
+                            value=f"```\n{item_text}```",
+                            inline=False
+                        )
+                    
+                    embed.set_footer(text="통합 봇 | 상인 정보 알림")
+                    
+                    await channel.send(embed=embed)
+                    self.last_notification = now
+                    print(f"✅ 상인 알림 전송: {len(self.merchant_data)}명")
                 
-                embed.set_footer(text="통합 봇 | 다음 알림: 30분 후")
-                
-                await channel.send(embed=embed)
-                self.last_notification = now
-                print(f"✅ 상인 알림 전송: {len(self.merchant_data)}명")
+                # 상인이 모두 사라진 경우
+                elif previous_data and len(previous_data) > 0:
+                    embed = discord.Embed(
+                        title="📴 떠돌이 상인 종료 알림",
+                        description="모든 떠돌이 상인이 비활성화되었습니다.",
+                        color=0x808080,
+                        timestamp=now
+                    )
+                    embed.set_footer(text="통합 봇 | 상인 종료 알림")
+                    
+                    await channel.send(embed=embed)
+                    print("✅ 상인 종료 알림 전송")
             
         except Exception as e:
             print(f"❌ 상인 체크 오류: {e}")
+    
+    def has_merchant_data_changed(self, previous_data, current_data):
+        """상인 데이터 변경 여부 확인"""
+        try:
+            # 이전 데이터가 없고 현재 데이터가 있으면 = 처음 상인 등장
+            if not previous_data and current_data and len(current_data) > 0:
+                return True
+            
+            # 둘 다 None이거나 빈 리스트인 경우 = 변경 없음
+            if not previous_data and not current_data:
+                return False
+            
+            # 이전에 데이터가 있었는데 현재 없으면 = 상인 모두 사라짐
+            if previous_data and len(previous_data) > 0 and (not current_data or len(current_data) == 0):
+                return True
+            
+            # 현재 데이터가 없으면 변경 없음
+            if not current_data:
+                return False
+            
+            # 상인 수가 다른 경우
+            if len(previous_data) != len(current_data):
+                return True
+            
+            # 각 상인의 정보를 비교
+            for prev_merchant in previous_data:
+                # 현재 데이터에서 같은 상인 찾기
+                current_merchant = None
+                for curr_merchant in current_data:
+                    if (curr_merchant.get('region_name') == prev_merchant.get('region_name') and 
+                        curr_merchant.get('npc_name') == prev_merchant.get('npc_name')):
+                        current_merchant = curr_merchant
+                        break
+                
+                # 상인이 사라진 경우
+                if not current_merchant:
+                    return True
+                
+                # 아이템 목록 비교
+                prev_items = set(item['name'] for item in prev_merchant.get('items', []))
+                curr_items = set(item['name'] for item in current_merchant.get('items', []))
+                
+                if prev_items != curr_items:
+                    return True
+            
+            return False
+            
+        except Exception as e:
+            print(f"❌ 데이터 변경 감지 오류: {e}")
+            return True  # 오류 발생시 변경된 것으로 간주
     
     def setup_commands(self):
         """슬래시 명령어 설정"""
@@ -785,7 +861,7 @@ class IntegratedLostArkBot:
             
             embed.add_field(
                 name="🔔 자동 알림",
-                value=f"떠돌이상인이 활성화되면 <#{self.merchant_channel_id}> 채널에 30분마다 자동 알림됩니다.",
+                value=f"떠돌이상인 정보가 변경되면 <#{self.merchant_channel_id}> 채널에 자동 알림됩니다.",
                 inline=False
             )
             
@@ -795,13 +871,13 @@ class IntegratedLostArkBot:
     async def create_character_embed_from_sibling(self, character_data: Dict, siblings_info: List[Dict]) -> discord.Embed:
         """siblings 데이터에서 특정 캐릭터 정보 Discord Embed 생성"""
         
-        # 기본 정보
+        # siblings API 응답 모델에 맞는 필드들
+        # CharacterInfo: ServerName, CharacterName, CharacterLevel, CharacterClassName, ItemAvgLevel
         char_name = character_data.get('CharacterName', 'Unknown')
         server_name = character_data.get('ServerName', 'Unknown')
         char_class = character_data.get('CharacterClassName', 'Unknown')
         char_level = character_data.get('CharacterLevel', 0)
-        item_level = character_data.get('ItemAvgLevel', 'Unknown')
-        item_max_level = character_data.get('ItemMaxLevel', 'Unknown')
+        item_avg_level = character_data.get('ItemAvgLevel', 'Unknown')
         
         # Embed 생성
         embed = discord.Embed(
@@ -811,26 +887,56 @@ class IntegratedLostArkBot:
             timestamp=datetime.now()
         )
         
-        # 기본 정보 필드
+        # 모든 기본 정보 필드를 개별적으로 표시
         embed.add_field(
-            name="📊 기본 정보",
-            value=f"```\n레벨: {char_level}\n평균 아이템레벨: {item_level}\n최고 아이템레벨: {item_max_level}```",
-            inline=False
+            name="🏠 서버",
+            value=f"```{server_name}```",
+            inline=True
         )
+        
+        embed.add_field(
+            name="👤 캐릭터명",
+            value=f"```{char_name}```",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="🎯 캐릭터 레벨",
+            value=f"```Lv. {char_level}```",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="⚔️ 직업 (클래스)",
+            value=f"```{char_class}```",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="💎 평균 아이템레벨",
+            value=f"```{item_avg_level}```",
+            inline=True
+        )
+        
+        # 빈 필드로 정렬 맞추기
+        embed.add_field(name="\u200b", value="\u200b", inline=True)
         
         # 원정대 정보 (간략하게)
         if siblings_info and len(siblings_info) > 1:
             other_chars = [s for s in siblings_info if s.get('CharacterName') != char_name]
             if other_chars:
                 expedition_text = ""
-                for sibling in other_chars[:5]:  # 최대 5개만 표시
+                for sibling in other_chars[:8]:  # 최대 8개만 표시
                     sib_name = sibling.get('CharacterName', 'Unknown')
+                    sib_server = sibling.get('ServerName', 'Unknown')
                     sib_class = sibling.get('CharacterClassName', 'Unknown')
-                    sib_level = sibling.get('ItemAvgLevel', 'Unknown')
-                    expedition_text += f"{sib_name} ({sib_class}) - {sib_level}\n"
+                    sib_level = sibling.get('CharacterLevel', 0)
+                    sib_item_level = sibling.get('ItemAvgLevel', 'Unknown')
+                    expedition_text += f"• {sib_name}\n"
+                    expedition_text += f"  🏠 {sib_server} | 📋 {sib_class} | 🎯 Lv.{sib_level} | ⚔️ {sib_item_level}\n\n"
                 
-                if len(other_chars) > 5:
-                    expedition_text += f"... 외 {len(other_chars) - 5}명"
+                if len(other_chars) > 8:
+                    expedition_text += f"... 외 {len(other_chars) - 8}명"
                 
                 embed.add_field(
                     name=f"👥 원정대 캐릭터 ({len(siblings_info)}명)",
@@ -838,7 +944,7 @@ class IntegratedLostArkBot:
                     inline=False
                 )
         
-        embed.set_footer(text="로스트아크 공식 API | 캐릭터 정보 조회")
+        embed.set_footer(text="로스트아크 공식 | 캐릭터 정보 조회")
         
         return embed
     
@@ -861,74 +967,64 @@ class IntegratedLostArkBot:
         # 캐릭터들을 아이템레벨 순으로 정렬
         sorted_chars = sorted(siblings_info, key=lambda x: float(x.get('ItemAvgLevel', '0').replace(',', '')), reverse=True)
         
-        # 캐릭터 정보를 필드로 추가
-        for i, character in enumerate(sorted_chars):
-            char_name = character.get('CharacterName', 'Unknown')
-            char_class = character.get('CharacterClassName', 'Unknown')
-            char_level = character.get('CharacterLevel', 0)
-            item_level = character.get('ItemAvgLevel', 'Unknown')
+        # 서버별로 캐릭터 그룹핑
+        servers = {}
+        for character in sorted_chars:
+            server_name = character.get('ServerName', 'Unknown')
+            if server_name not in servers:
+                servers[server_name] = []
+            servers[server_name].append(character)
+        
+        # 서버별로 표시
+        for server_name, server_chars in servers.items():
+            field_text = ""
             
-            # 검색한 캐릭터는 강조 표시
-            if char_name == search_name:
-                name_display = f"⭐ {char_name}"
-            else:
-                name_display = char_name
+            for i, character in enumerate(server_chars):
+                char_name = character.get('CharacterName', 'Unknown')
+                char_class = character.get('CharacterClassName', 'Unknown')
+                char_level = character.get('CharacterLevel', 0)
+                item_level = character.get('ItemAvgLevel', 'Unknown')
+                
+                # 검색한 캐릭터는 강조 표시
+                if char_name == search_name:
+                    name_display = f"⭐ {char_name}"
+                else:
+                    name_display = char_name
+                
+                # 전체 순위 계산 (아이템레벨 기준)
+                rank = sorted_chars.index(character) + 1
+                field_text += f"{rank}. {name_display}\n"
+                field_text += f"   📋 {char_class} | 🎯 Lv.{char_level} | ⚔️ {item_level}\n\n"
             
+            # 서버별 필드 추가
             embed.add_field(
-                name=f"{i+1}. {name_display}",
-                value=f"```\n직업: {char_class}\n레벨: {char_level}\n아이템레벨: {item_level}```",
-                inline=True
+                name=f"🏠 {server_name} 서버 ({len(server_chars)}명)",
+                value=f"```\n{field_text.strip()}```",
+                inline=False
             )
+        
+        # 통계 정보 추가
+        if len(sorted_chars) > 0:
+            # 최고 아이템레벨과 평균 계산
+            item_levels = []
+            for char in sorted_chars:
+                try:
+                    level = float(char.get('ItemAvgLevel', '0').replace(',', ''))
+                    item_levels.append(level)
+                except:
+                    pass
             
-            # 3개씩 한 줄에 배치하기 위해 3의 배수마다 빈 필드 추가
-            if (i + 1) % 3 == 0 and i < len(sorted_chars) - 1:
-                embed.add_field(name="\u200b", value="\u200b", inline=False)
-        
-        embed.set_footer(text="로스트아크 공식 API | 원정대 정보 조회")
-        
-        return embed
-        """캐릭터 정보 Discord Embed 생성"""
-        
-        # 기본 정보
-        char_name = char_info.get('CharacterName', 'Unknown')
-        server_name = char_info.get('ServerName', 'Unknown')
-        char_class = char_info.get('CharacterClassName', 'Unknown')
-        char_level = char_info.get('CharacterLevel', 0)
-        item_level = char_info.get('ItemAvgLevel', 'Unknown')
-        item_max_level = char_info.get('ItemMaxLevel', 'Unknown')
-        
-        # Embed 생성
-        embed = discord.Embed(
-            title=f"⚔️ {char_name}",
-            description=f"**{server_name}** 서버의 **{char_class}**",
-            color=0x00ff00,
-            timestamp=datetime.now()
-        )
-        
-        # 기본 정보 필드
-        embed.add_field(
-            name="📊 기본 정보",
-            value=f"```\n레벨: {char_level}\n평균 아이템레벨: {item_level}\n최고 아이템레벨: {item_max_level}```",
-            inline=False
-        )
-        
-        # 원정대 정보 (있는 경우)
-        if siblings_info and len(siblings_info) > 0:
-            expedition_text = ""
-            for sibling in siblings_info[:10]:  # 최대 10개만 표시
-                sib_name = sibling.get('CharacterName', 'Unknown')
-                sib_class = sibling.get('CharacterClassName', 'Unknown')
-                sib_level = sibling.get('ItemAvgLevel', 'Unknown')
-                expedition_text += f"{sib_name} ({sib_class}) - {sib_level}\n"
-            
-            if expedition_text:
+            if item_levels:
+                max_level = max(item_levels)
+                avg_level = sum(item_levels) / len(item_levels)
+                
                 embed.add_field(
-                    name="👥 원정대 캐릭터",
-                    value=f"```\n{expedition_text}```",
+                    name="📊 원정대 통계",
+                    value=f"```\n최고 아이템레벨: {max_level:,.1f}\n평균 아이템레벨: {avg_level:,.1f}\n총 캐릭터 수: {len(sorted_chars)}명```",
                     inline=False
                 )
         
-        embed.set_footer(text="로스트아크 공식 API | 캐릭터 정보 조회")
+        embed.set_footer(text="로스트아크 공식 API | 원정대 정보 조회")
         
         return embed
     
@@ -944,10 +1040,11 @@ def main():
     print("🚀 통합 로스트아크 봇 시작")
     print("=" * 60)
     print("기능:")
-    print("1. 떠돌이상인 실시간 알림 (Selenium 기반)")
+    print("1. 떠돌이상인 변경 감지 알림 (Selenium 기반)")
     print("2. 캐릭터 정보 조회 (/캐릭터정보 명령어)")
-    print("3. 자동 알림 (30분마다)")
-    print("4. 실시간 데이터 새로고침")
+    print("3. 원정대 정보 조회 (/원정대정보 명령어)")
+    print("4. 자동 데이터 변경 감지 (5분마다)")
+    print("5. 실시간 데이터 새로고침")
     print("=" * 60)
     
     # Discord 봇 토큰 입력
@@ -977,7 +1074,7 @@ def main():
     print(f"   - 캐릭터 정보 조회: {'활성화' if lostark_api_key else '비활성화'}")
     print(f"   - 데이터 소스: Selenium + 로스트아크 API")
     print(f"   - 자동 체크: 5분마다")
-    print(f"   - 자동 알림: 30분마다")
+    print(f"   - 자동 알림: 데이터 변경시에만")
     print(f"   - 데이터 새로고침: 30분마다")
     print(f"\n사용 가능한 명령어:")
     print(f"   - /떠상 : 현재 활성 상인 확인")
