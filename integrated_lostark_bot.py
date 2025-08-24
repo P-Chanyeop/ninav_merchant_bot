@@ -301,15 +301,17 @@ class LostArkCharacterAPI:
 class IntegratedLostArkBot:
     """통합 로스트아크 디스코드 봇 (슬래시 명령어 버전)"""
     
-    def __init__(self, discord_token: str, merchant_channel_id: int, lostark_api_key: str = None):
+    def __init__(self, discord_token: str, lostark_api_key: str = None):
         self.discord_token = discord_token
-        self.merchant_channel_id = merchant_channel_id
         self.lostark_api_key = lostark_api_key
         
         # Discord 봇 설정 (슬래시 명령어용)
         intents = discord.Intents.default()
         intents.message_content = True
         self.bot = commands.Bot(command_prefix='!', intents=intents)  # prefix는 슬래시 명령어에서 사용안함
+        
+        # 서버별 알림 채널 설정 (여러 서버 지원)
+        self.merchant_channels = {}  # {guild_id: channel_id}
         
         # 로스트아크 API 초기화 (API 키가 있는 경우)
         if self.lostark_api_key:
@@ -390,9 +392,10 @@ class IntegratedLostArkBot:
     async def check_merchants(self):
         """5분마다 상인 상태 확인 및 데이터 변경시에만 알림"""
         try:
-            channel = self.bot.get_channel(self.merchant_channel_id)
-            if not channel:
-                print(f"❌ 채널을 찾을 수 없습니다: {self.merchant_channel_id}")
+            # 알림 채널이 설정된 서버가 없으면 체크만 하고 알림은 보내지 않음
+            if not self.merchant_channels:
+                # 데이터만 새로고침
+                await self.refresh_data_if_needed()
                 return
             
             # 이전 데이터 백업
@@ -443,9 +446,10 @@ class IntegratedLostArkBot:
                     
                     embed.set_footer(text="통합 봇 | 상인 정보 알림")
                     
-                    await channel.send(embed=embed)
+                    # 모든 등록된 서버에 알림 전송
+                    await self.send_notification_to_all_servers(embed)
                     self.last_notification = now
-                    print(f"✅ 상인 알림 전송: {len(self.merchant_data)}명")
+                    print(f"✅ 상인 알림 전송: {len(self.merchant_data)}명 → {len(self.merchant_channels)}개 서버")
                 
                 # 상인이 모두 사라진 경우
                 elif previous_data and len(previous_data) > 0:
@@ -457,11 +461,32 @@ class IntegratedLostArkBot:
                     )
                     embed.set_footer(text="통합 봇 | 상인 종료 알림")
                     
-                    await channel.send(embed=embed)
-                    print("✅ 상인 종료 알림 전송")
+                    # 모든 등록된 서버에 알림 전송
+                    await self.send_notification_to_all_servers(embed)
+                    print(f"✅ 상인 종료 알림 전송 → {len(self.merchant_channels)}개 서버")
             
         except Exception as e:
             print(f"❌ 상인 체크 오류: {e}")
+    
+    async def send_notification_to_all_servers(self, embed):
+        """모든 등록된 서버에 알림 전송"""
+        failed_channels = []
+        
+        for guild_id, channel_id in self.merchant_channels.items():
+            try:
+                channel = self.bot.get_channel(channel_id)
+                if channel:
+                    await channel.send(embed=embed)
+                else:
+                    failed_channels.append(guild_id)
+                    print(f"⚠️ 채널을 찾을 수 없음: {channel_id} (서버: {guild_id})")
+            except Exception as e:
+                failed_channels.append(guild_id)
+                print(f"❌ 알림 전송 실패: {channel_id} (서버: {guild_id}) - {e}")
+        
+        # 실패한 채널들 제거
+        for guild_id in failed_channels:
+            del self.merchant_channels[guild_id]
     
     def has_merchant_data_changed(self, previous_data, current_data):
         """상인 데이터 변경 여부 확인"""
@@ -824,6 +849,132 @@ class IntegratedLostArkBot:
             except Exception as e:
                 await interaction.followup.send(f"❌ 동기화 실패: {e}", ephemeral=True)
         
+        @self.bot.tree.command(name="알림설정", description="현재 채널을 떠돌이상인 자동 알림 채널로 설정합니다")
+        async def set_notification_channel(interaction: discord.Interaction):
+            """알림 채널 설정 명령어 (관리자만 사용 가능)"""
+            # 관리자 권한 확인
+            if not interaction.user.guild_permissions.manage_channels:
+                await interaction.response.send_message("❌ 이 명령어는 채널 관리 권한이 있는 사용자만 사용할 수 있습니다.", ephemeral=True)
+                return
+            
+            guild_id = interaction.guild_id
+            channel_id = interaction.channel_id
+            channel_name = interaction.channel.name
+            
+            # 알림 채널 설정
+            self.merchant_channels[guild_id] = channel_id
+            
+            embed = discord.Embed(
+                title="✅ 알림 채널 설정 완료",
+                description=f"**#{channel_name}** 채널이 떠돌이상인 자동 알림 채널로 설정되었습니다.",
+                color=0x00ff00,
+                timestamp=datetime.now()
+            )
+            
+            embed.add_field(
+                name="📋 설정 정보",
+                value=f"```\n서버: {interaction.guild.name}\n채널: #{channel_name}\n설정자: {interaction.user.display_name}```",
+                inline=False
+            )
+            
+            embed.add_field(
+                name="🔔 알림 안내",
+                value="이제 떠돌이상인 정보가 변경될 때마다 이 채널로 자동 알림이 전송됩니다.",
+                inline=False
+            )
+            
+            embed.set_footer(text="통합 봇 | 알림 채널 설정")
+            await interaction.response.send_message(embed=embed)
+            
+            print(f"✅ 알림 채널 설정: {interaction.guild.name} - #{channel_name} ({channel_id})")
+        
+        @self.bot.tree.command(name="알림해제", description="떠돌이상인 자동 알림을 해제합니다")
+        async def remove_notification_channel(interaction: discord.Interaction):
+            """알림 해제 명령어 (관리자만 사용 가능)"""
+            # 관리자 권한 확인
+            if not interaction.user.guild_permissions.manage_channels:
+                await interaction.response.send_message("❌ 이 명령어는 채널 관리 권한이 있는 사용자만 사용할 수 있습니다.", ephemeral=True)
+                return
+            
+            guild_id = interaction.guild_id
+            
+            if guild_id in self.merchant_channels:
+                del self.merchant_channels[guild_id]
+                
+                embed = discord.Embed(
+                    title="✅ 알림 해제 완료",
+                    description="떠돌이상인 자동 알림이 해제되었습니다.",
+                    color=0xff9900,
+                    timestamp=datetime.now()
+                )
+                
+                embed.add_field(
+                    name="📋 안내",
+                    value="더 이상 자동 알림을 받지 않습니다.\n`/알림설정` 명령어로 언제든 다시 설정할 수 있습니다.",
+                    inline=False
+                )
+                
+                embed.set_footer(text="통합 봇 | 알림 해제")
+                await interaction.response.send_message(embed=embed)
+                
+                print(f"✅ 알림 해제: {interaction.guild.name}")
+            else:
+                await interaction.response.send_message("❌ 현재 설정된 알림 채널이 없습니다.", ephemeral=True)
+        
+        @self.bot.tree.command(name="알림상태", description="현재 설정된 알림 채널 정보를 확인합니다")
+        async def check_notification_status(interaction: discord.Interaction):
+            """알림 상태 확인 명령어"""
+            guild_id = interaction.guild_id
+            
+            if guild_id in self.merchant_channels:
+                channel_id = self.merchant_channels[guild_id]
+                channel = self.bot.get_channel(channel_id)
+                
+                if channel:
+                    embed = discord.Embed(
+                        title="🔔 알림 상태",
+                        description="떠돌이상인 자동 알림이 **활성화**되어 있습니다.",
+                        color=0x00ff00,
+                        timestamp=datetime.now()
+                    )
+                    
+                    embed.add_field(
+                        name="📍 알림 채널",
+                        value=f"<#{channel_id}> (#{channel.name})",
+                        inline=False
+                    )
+                    
+                    embed.add_field(
+                        name="📊 등록된 서버 수",
+                        value=f"현재 **{len(self.merchant_channels)}개** 서버에서 알림을 사용 중입니다.",
+                        inline=False
+                    )
+                else:
+                    # 채널이 삭제된 경우
+                    del self.merchant_channels[guild_id]
+                    embed = discord.Embed(
+                        title="⚠️ 알림 채널 오류",
+                        description="설정된 알림 채널이 삭제되었습니다.\n`/알림설정` 명령어로 다시 설정해주세요.",
+                        color=0xff9900,
+                        timestamp=datetime.now()
+                    )
+            else:
+                embed = discord.Embed(
+                    title="📴 알림 비활성화",
+                    description="떠돌이상인 자동 알림이 설정되지 않았습니다.",
+                    color=0x808080,
+                    timestamp=datetime.now()
+                )
+                
+                embed.add_field(
+                    name="💡 알림 설정 방법",
+                    value="`/알림설정` 명령어를 사용하여 현재 채널을 알림 채널로 설정할 수 있습니다.",
+                    inline=False
+                )
+            
+            embed.set_footer(text="통합 봇 | 알림 상태 확인")
+            await interaction.response.send_message(embed=embed)
+        
         @self.bot.tree.command(name="도움말", description="봇의 모든 명령어를 확인합니다")
         async def help_command(interaction: discord.Interaction):
             """도움말 명령어"""
@@ -837,6 +988,12 @@ class IntegratedLostArkBot:
             embed.add_field(
                 name="📍 떠돌이상인 명령어",
                 value="`/떠상` - 현재 활성 상인 확인\n`/새로고침` - 데이터 새로고침\n`/떠상검색` - 아이템으로 상인 검색",
+                inline=False
+            )
+            
+            embed.add_field(
+                name="🔔 알림 설정 명령어",
+                value="`/알림설정` - 현재 채널을 알림 채널로 설정 (관리자)\n`/알림해제` - 자동 알림 해제 (관리자)\n`/알림상태` - 알림 설정 상태 확인",
                 inline=False
             )
             
@@ -855,13 +1012,29 @@ class IntegratedLostArkBot:
             
             embed.add_field(
                 name="💡 사용 예시",
-                value="`/캐릭터정보 캐릭터명:유우니유니`\n`/원정대정보 캐릭터명:유우니유니`\n`/떠상검색 아이템명:실링`\n`/떠상`",
+                value="`/알림설정` - 자동 알림 설정\n`/떠상` - 상인 정보 확인\n`/떠상검색 아이템명:실링`\n`/캐릭터정보 캐릭터명:유우니유니`",
                 inline=False
             )
             
+            # 현재 서버의 알림 상태 표시
+            guild_id = interaction.guild_id
+            if guild_id in self.merchant_channels:
+                channel_id = self.merchant_channels[guild_id]
+                embed.add_field(
+                    name="🔔 현재 서버 알림 상태",
+                    value=f"✅ 활성화됨 - <#{channel_id}>",
+                    inline=False
+                )
+            else:
+                embed.add_field(
+                    name="🔔 현재 서버 알림 상태",
+                    value="❌ 비활성화됨\n`/알림설정` 명령어로 알림을 활성화하세요.",
+                    inline=False
+                )
+            
             embed.add_field(
-                name="🔔 자동 알림",
-                value=f"떠돌이상인 정보가 변경되면 <#{self.merchant_channel_id}> 채널에 자동 알림됩니다.",
+                name="📋 알림 설정 방법",
+                value="1️⃣ 알림을 받고 싶은 채널에서 `/알림설정` 명령어 사용\n2️⃣ 관리자 권한 필요 (채널 관리 권한)\n3️⃣ 설정 완료 후 자동 알림 시작",
                 inline=False
             )
             
@@ -1043,8 +1216,9 @@ def main():
     print("1. 떠돌이상인 변경 감지 알림 (Selenium 기반)")
     print("2. 캐릭터 정보 조회 (/캐릭터정보 명령어)")
     print("3. 원정대 정보 조회 (/원정대정보 명령어)")
-    print("4. 자동 데이터 변경 감지 (5분마다)")
-    print("5. 실시간 데이터 새로고침")
+    print("4. 서버별 알림 채널 설정 (/알림설정 명령어)")
+    print("5. 자동 데이터 변경 감지 (5분마다)")
+    print("6. 실시간 데이터 새로고침")
     print("=" * 60)
     
     # Discord 봇 토큰 입력
@@ -1052,14 +1226,6 @@ def main():
     if not discord_token:
         print("❌ Discord 봇 토큰이 필요합니다!")
         return
-    
-    # 떠돌이상인 알림 채널 ID 입력
-    channel_id = input("떠돌이상인 알림을 보낼 채널 ID를 입력하세요: ").strip()
-    if not channel_id.isdigit():
-        print("❌ 올바른 채널 ID가 필요합니다!")
-        return
-    
-    channel_id = int(channel_id)
     
     # 로스트아크 API 키 입력 (선택사항)
     print("\n로스트아크 API 키를 입력하면 캐릭터 정보 조회 기능을 사용할 수 있습니다.")
@@ -1070,23 +1236,30 @@ def main():
         lostark_api_key = None
     
     print(f"\n✅ 설정 완료:")
-    print(f"   - 떠돌이상인 알림 채널: {channel_id}")
     print(f"   - 캐릭터 정보 조회: {'활성화' if lostark_api_key else '비활성화'}")
     print(f"   - 데이터 소스: Selenium + 로스트아크 API")
     print(f"   - 자동 체크: 5분마다")
     print(f"   - 자동 알림: 데이터 변경시에만")
     print(f"   - 데이터 새로고침: 30분마다")
+    print(f"   - 다중 서버 지원: 활성화")
     print(f"\n사용 가능한 명령어:")
+    print(f"   - /알림설정 : 현재 채널을 알림 채널로 설정 (관리자)")
     print(f"   - /떠상 : 현재 활성 상인 확인")
     print(f"   - /새로고침 : 데이터 새로고침")
     print(f"   - /떠상검색 아이템명 : 아이템으로 상인 검색")
     if lostark_api_key:
         print(f"   - /캐릭터정보 캐릭터명 : 캐릭터 정보 조회")
+        print(f"   - /원정대정보 캐릭터명 : 원정대 정보 조회")
     print(f"   - /도움말 : 전체 명령어 보기")
+    print(f"\n📋 알림 설정 방법:")
+    print(f"   1. 봇을 서버에 초대")
+    print(f"   2. 알림을 받고 싶은 채널에서 '/알림설정' 명령어 사용")
+    print(f"   3. 관리자 권한 필요 (채널 관리 권한)")
+    print(f"   4. 설정 완료 후 자동 알림 시작")
     print(f"\n🚀 봇을 시작합니다...")
     
     # 통합 봇 실행
-    bot = IntegratedLostArkBot(discord_token, channel_id, lostark_api_key)
+    bot = IntegratedLostArkBot(discord_token, lostark_api_key)
     bot.run()
 
 if __name__ == "__main__":
